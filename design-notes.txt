@@ -1,0 +1,206 @@
+DESIGN NOTES
+
+All this program was asking for was to create an interrupt procedure to turn on/off an LED by servicing a button interrupt. Having learned my lesson in the last program, I meticulously followed the steps in the handout for this program and worked through Tutorial 2 before I started.
+
+First, I had to initialize GPIO pin <13> to be an output to the LED. I referred to the Program for Temperature Section on page 170 as an example, keeping in mind that Pin <13> is active high and not active low. I developed an initialization table and determined that writing a word with a 1 in the bit 13 position to GPSR0 at 0x40E000018 would turn the LED on and writing the same word to GPCR0 at 0x40E00024 would turn the LED off. 
+
+I got stuck on the role of GPDR0 because I was using the LED2 example on page 216 for lighting LEDs and it included setting pins as inputs to read an A/D converter. The READ-WRITE-MODIFY process is necessary for bit <13> in the GPDR0 register to set the bit as an output while not changing any of the other bit values in GPDR0. Without it, bit <13> won't be a proper output and anything connected to it will put signals into the system. 
+
+This was a much simpler version of the algorithm on page 175:
+
+1. Program GPIO <13> as logic low when converted to outputs so LEDs off
+2. Program GPIO <13> as output
+
+Next, I used the agitator example on page 175 as a template for determining the algorithm for a delay loop so the LED would switch between on and off every one second. The delay loop in the example is ten seconds but I made the same system assumptions and recalculated the required half-word for the one-second delay required by this program. I assumed the processor runs with 512 MHz clock, yielding a period of 1.95 ns; BNE, SUBS, and NOP each take one clock cycle so the time around the loop is 3x1.95 ns = 5.85 ns. The desired delay of one second divided by 5.85 ns gives the number of clock cycles necessary for the delay: 170940170, which is 0x0A305660 in hex.
+
+I initially included a clock in the algorithm for the delay to count down seconds but if it's only one second then it doesn't make any sense so I left it out of my initial test. 
+
+I then got stuck on the idea of setting aside a memory location that can be toggled back and forth to 
+keep track of whether the LED is currently on or off, and then take the appropriate action based on the current state of the LED. I didn't know how to write what where. I looked at pages 172, 175. 
+
+I went on to the rest of it while I figured out what the memory address did.
+
+Now to the interrupt part: I need to hook the interrupt vector, chain the interrupt procedure, initialize the PXA270 interrupt controller, and service the interrupt. The pin is GPIO<91> so Figure 4-9 on page 212 tells me I need GPCR2 (0x40E0002C), GPDR2 (0x40E00014), and GPSR2 (0x40E00020). The template for initializing those pins is in Table 4-1 on page 217, where GPIO<91> is matched to GPDR2 bit 27, which requires the word 0xF[0100]FFFFFF or 0xF[7]FFFFFF to initialize as an input.
+
+The basic algorithm at this point looks like:
+
+#1 Initialize my registers, including memory register
+#2 Initialize the interrupt controller
+#3 Hook IRQ address
+#4 Wait for an interrupt ... then INT_DIRECTOR chain
+#5 The service button interrupts, 
+	Interrupt checks the value in the mem address
+	If ON, turn LED OFF, write ON to mem register
+	else turn LED ON, write OFF to mem register
+	loop to #4
+
+I built the entire algorithm using the button.s on page 296 and realized afterward that I'd put both parts of the project into one. No wonder it made no sense. I took it apart; algorithm's on the next page.
+
+In the process of writing the algorithm, I realized that I ought to set aside a ONOROFF value (I decided on 0xA for ON and 0xB for OFF, and I'll write to it during the button service) and a DELAYCOUNT of one second that has the value above. That way it'll be easily referenced and easily changeable.
+Once the algorithm was done, I filled in with my own values and attempted to run it.
+
+Debugging
+1. I attempted to initialize the clear bit 27 and set bit 27 as
+.EQU CLR27, 0xF7FFFFFF
+.EQU SET27, 0x08000000
+but that threw an error calling for an immediate expression so I removed those two and used the values.
+
+2. The ldscript had a typo and the tutorial didn't say to put it in as a .s but those were resolved.
+
+3. The initial run-through worked up through to the wait loop. The LED turned off as expected during the initialization steps. However, hitting 'continue' and pushing the button made no difference. The program just froze for a while. I reset and had a success: I pushed continue and the  little blue twirly icon came up as Insight did its thing. The LED was off; when I pushed the orange button, the LED lit up.
+
+However, once the LED was on, pushing the button only turned off the LED for as long as I held the orange button in. Once I released it, the LED came on again. I realized that there were two buttons: the limit switch and the orange reset. The limit switch did nothing and is probably the one I needed to have turn the LED on and off so I did go back to examine that section. This indicates a problem in the setting and comparing of 0xA and 0xB.
+
+... I realized I hadn't actually written that part. 
+
+ALGORITHM FOR PART 1
+Use a delay loop to turn on the LED for 1 second and off for 1 second repeatedly.
+
+Initialize the values
+
+	Load pointer of GPDR0 into R0
+	Load pointer of GPSR0 into R1
+	Load pointer of GPCR0 into R2
+	Load the necessary word to put a 1 in bit 13
+	Write to GPCR0 to turn the LED off to start
+	Read the value from GPDR0
+	Modify - set the bits of R4 to write bit 13 as an output
+	Write the word back to GPDR0 to set output
+LIGHT	Write the word to GPSR0 to turn the LED on
+LOOP	Load the counter hex value equal to the necessary clock cycles into R1 
+	Decrement the count by one
+	Loop to LOOP
+	Write the word to GPCR0 to turn the LED off
+	Load the counter hex value equal to the necessary clock cycles into R1 
+	Decrement the count by one
+	Loop to LIGHT
+	End
+
+Load literal pool value for counter
+
+Program Part 1
+
+.EQU GPDR0, 0x40E0000C 
+.EQU GPSR0, 0x40E00018 
+.EQU GPCR0, 0x40E00024 
+
+	LDR R0,GPDR0	@ Load pointer of GPDR0 into R0.
+	LDR R1,GPSR0 	@ Load pointer of GPSR0 into R1, turns LED on
+	LDR R2,GPCR0	@ Load pointer of GPCR0 into R2, turns LED off
+	LDR R3,0x2000	@ This calculated word contains a 1 in bit 13 
+	STR R3,[R2]		@ Write to GPCR0 to turn the LED off to start
+	LDR R4,[R0]		@ Read the value from GPDR0
+	ORR R4,R4,R3		@ Modify - set the bits of R4 to write bit 13 as an output
+	STR R4,[R0]		@ Write the word back to GPDR0
+LIGHT:  LDR R1,R3		@ Write the word to GPSR0 to turn the LED on
+	  LDR R1,DELAYCOUNT	@ Load the counter hex value equal to the necessary cycles into R1 
+DELAY: SUBS R1,R1,#1 	@ Decrement the count by one
+	B DELAY		@ Loop to DELAY
+	LDR R2,R3		@ Write the word to GPCR0 to turn the LED off
+	LDR R1,COUNTER	@ Load the counter hex value equal to the necessary clock cycles into R1 
+	SUBS R1,R1,#1	@ Decrement the count by one
+	B LIGHT		@ Loop to LIGHT
+	NOP			@ End
+
+ALGORITHM FOR PART 2
+Write an algorithm for the Button Service procedure that will turn the LED on
+the first time it is called a turn the LED off the second time it is called.
+
+This algorithm was created using the button.s program on page 296
+
+Pin 13 is an active high output to LED
+Pin 91 is an input from the button press
+
+
+@ INITIALIZE GPDR0, GPCR0, GPSR0, GPDR2, GPSR2, GPCR2, GEDR2, GRER2
+
+@ INITIALIZE GPIO 13 AS HIGH OUTPUT 
+
+Load pointer of GPDR0 into R0. 
+Load pointer of GPSR0 into R1; write the R3 word here turns LED on 
+Load pointer of GPCR0 into R2; write the R3 word here turns LED off 
+This calculated word contains a 1 in bit 13 
+Write to GPCR0 to turn the LED off to start 
+Read the value from GPDR0 
+Modify - set the bits of R4 to write bit 13 as an output 
+Write the word back to GPDR0 
+
+@ INITIALIZE GPIO91 FOR INPUT AND RISING EDGE DETECT 
+
+Load pointer of GPDR2 into R0. 
+Modify - clear bit 27 in GPDR2 to make GPIO 91 an input for sure 
+Write word back to GPDR2 
+Load address of GRER2 register 
+Load mask to set bit 27 
+Set bit 27 
+Write word back to GRER2 register 
+
+@ INITIALIZE INTERRUPT CONTROLLER 
+@ NOTE: DEFAULT VALUE OF IRQ FOR ICLR BIT 10 IS DESIRED VALUE, SO SEND NO WORD 
+@ NOTE: DEFAULT VALUE OF DIM BIT IN ICCR IS DESIRED VALUE, SO NO WORD SENT 
+
+Load address of mask (ICMR) register 
+Read current value of register 
+Load value to unmask bit 10 for GPIO82:2 
+Set bit 10 to unmask IM10 
+Write word back to ICMR register 
+
+@ HOOK IRQ PROCEDURE ADDRESS AND INSTALL OUR INT_HANDLER ADDRESS 
+
+Load IRQ interrupt vector address 0x18 
+Read instr from interrupt vector table at 0x18 
+Construct mask 
+Mask all but offset part of instruction 
+Build absolute address of IRQ procedure in literal pool 
+Read BTLDR IRQ address from literal pool 
+Save BTLDR IRQ address for use in IRQ_DIRECTOR 
+Load absolute address of our interrupt director 
+Store this address literal pool 
+
+@ MAKE SURE IRQ INTERRUPT ON PROCESSOR ENABLED BY CLEARING BIT 7 IN CPSR 
+
+Copy CPSR to R3 
+Clear bit 7 (IRQ Enable bit) 
+Write new counter value back in memory to lowest 8 bits of CPSR 
+
+@ WAIT LOOP HERE NOW FOR THE INTERRUPT SIGNAL BY DOING PROGRAM THINGS 
+@ THIS IS THE MAINLINE 
+
+Loop program to simulate mainline program while waiting for interrupt 
+
+@ HOUSTON WE HAVE AN INTERRUPT -- IS IT BUTTON OR SOMETHING ELSE? 
+@ INT_DIRECTOR
+Chains button interrupt procedure 
+Save registers to be used in procedure on stack 
+Assume only GPIO 119:2 possible for this program. 
+System will take care of others. 
+Point at IRQ pending register (ICIP) 
+Read ICIP register 
+Check if GPIO 119:2 IRQ interrupt on IS<10> asserted 
+No, must be other IRQ, pass on to system program 
+Yes, load GEDR2 register address to check if GPIO91 
+Read GPIO Edge Detect Register (GEDR2) value 
+Check if bit 27 = 1 (GPIO91 edge detected) 
+Yes, must be button press. 
+Go service - return to wait loop from SVC 
+
+@ IT'S NOT THE BUTTON, IT'S NOT THE BUTTON 
+No, must be other GP 80:2 IRQ, restore registers 
+Go to bootloader IRQ service procedure 
+
+@ IT'S THE BUTTON, IT'S THE BUTTON -- SERVICE THE BUTTON PRESS 
+
+Load value to clear bit 13 in GEDR2 register. 
+This will also reset bit 10 in ICPR and ICIP if no other GPIO 80-2 interrupts. 
+Write back to GPIO GEDR2 register 
+Point to ONOROFF variable in memory 
+Test for 0xA 
+If yes, then ON, set OFF by writing 0xB 
+	Load pointer to GPCR0 in R6 
+	Then write LED word to GPCR0 to turn off 
+Else, it's OFF, set ON by writing 0xA 
+	Load pointer to GPSR0 in R6 
+ 	Then write LED word to GPSR0 to turn on 
+Restore registers, including return address 
+Return from interrupt (to wait loop) 
+
