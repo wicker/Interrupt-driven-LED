@@ -1,0 +1,8 @@
+# Interrupt-driven LED
+
+An assembly program that drives an LED on an interrupt basis using a pushbutton switch.
+
+Introduction to hooking of interrupt vector, chaining of interrupt procedures, and servicing an interrupt produced by a pushbutton that turns on and off an LED. Active low pushbutton on GPIO13. LED control on GPIO 91 (button). Extensively used the framework from Dr. Douglas Hall's ECE371 textbook. 
+
+Written by Jen Hanni, Winter 2011 
+See the LICENSE file for copyright details.
